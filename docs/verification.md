@@ -127,3 +127,11 @@ Notes for Step 5:
 - Merges show as made by the owner's account, so the PR's verdict comment is what records that the dispatcher decided.
 
 The scratch repo `debudash/factorykit-scratch` (now public, ruleset active) stays for later steps until the owner says to delete it.
+
+## Later findings (Step 5)
+
+| Finding | Effect | What we do |
+|---|---|---|
+| On Windows `claude` is a `.cmd` shim. An argument containing `|`, `&`, `<`, `>`, `^` or a newline cuts the command line in cmd.exe, so later flags (here `--allowedTools`) silently disappear | The first live fix run had Edit and Write denied and escalated; the guards held and nothing was pushed | Long text never goes on the command line: the prompt is sent on stdin and the fix rules use `--append-system-prompt-file` (accepted although `--help` lists it only as `[-file]`). `tests/test_agent.py` checks every argument |
+| `--agent reviewer` with `-p` runs the reviewer definition headless, using its tools; Bash allow rules with spaces (`Bash(python *)`) work in `--allowedTools` | Reviewer ran tests as evidence, read-only | As built |
+| GitHub enables auto-merge and merges at once when the required checks are already green | PR #14 merged 0.1 s after the verdict | Expected; the verdict comment is posted first, so the record is complete |
