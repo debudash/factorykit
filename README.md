@@ -33,13 +33,16 @@ A light, reusable kit for delivering software on any GitHub repo with Claude Cod
 
 ## Set up a project (once per repo)
 
-1. In the project, run Matt's `/setup-matt-pocock-skills` in Claude Code. It creates `docs/agents/` and edits the instructions file.
-2. Run the setup script (Step 3). Start with a dry run:
+1. Run the setup script. Start with a dry run:
    ```
    python scripts/setup-project <path-to-repo> --dry-run
    python scripts/setup-project <path-to-repo>
    ```
-   It asks for your verify commands and settings, writes `AGENTS.md`, `CLAUDE.md` and `docs/agents/factory.md`, creates the 8 labels and the ruleset on `main`, and registers the project in `~/factory/projects.toml`.
+   It asks for your verify commands, the name of the CI check, and your settings. It writes `AGENTS.md` and `docs/agents/factory.md`, creates the 8 labels and the ruleset on `main`, and registers the project in `~/factory/projects.toml`.
+2. In the project, run Matt's `/setup-matt-pocock-skills` in Claude Code and accept its defaults. It creates `docs/agents/` and edits `AGENTS.md`. (`CLAUDE.md` must not exist yet, or his setup edits that instead; the script takes care of this.)
+3. Run `python scripts/setup-project <path-to-repo>` again. It writes the one-line `CLAUDE.md` and the triage note, and opens a setup PR labelled `no-dispatch`. Merge it yourself (choose "bypass rules" on the PR, see ADR 0018).
+
+Re-running the script is safe: it only changes what is missing or out of date, and never overwrites `docs/agents/factory.md` or your own text.
 
 ## Daily use
 
