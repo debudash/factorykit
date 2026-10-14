@@ -6,7 +6,10 @@ FactoryKit uses Matt Pocock's skills (`mattpocock/skills`) as its skill layer. T
 
 - `skills.lock` in this repo records the pinned tag and its commit.
 - `scripts/sync-skills` (Step 2) clones `mattpocock/skills` at that tag and copies every skill listed in its `.claude-plugin/plugin.json` into `~/.claude/skills/<name>/`. It also installs our own `agents/` and `skills/`.
-- `sync-skills --check` reports drift: a skill missing, changed, or left over from an older version.
+- `sync-skills --check` reports drift without using the network: the pin changed, a skill missing or edited by hand, or our own skills and agents changed since the last sync.
+- `sync-skills --dry-run` prints what a sync would change.
+- A sync never touches skills it did not install. If a same-named skill is already there (for example copied by hand), it refuses; run once with `--adopt` to take it over.
+- The tag must resolve to the commit in `skills.lock`, so a moved tag is refused.
 - Use the copy, not the Claude Code plugin. The plugin updates whenever Matt ships, and having both installed gives every skill twice. If the plugin is installed, uninstall it: `claude plugins uninstall mattpocock-skills@claude-plugins-official`.
 
 Current pin: `v1.3.1` (commit `24fe0ef`), installed during Step 0 (see `docs/verification.md` V2).

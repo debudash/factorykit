@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Install Matt Pocock's skills at the pinned tag, plus FactoryKit's agents and skills, at user level.
+
+    python scripts/sync-skills            install or update (clones the pinned tag)
+    python scripts/sync-skills --dry-run  print what a sync would change, change nothing
+    python scripts/sync-skills --check    report drift without network, change nothing; exit 1 on drift
+    python scripts/sync-skills --adopt    take over same-named skills installed by hand (first sync only)
+
+The pin is in skills.lock. What was installed, and its content hash, is recorded in
+<claude dir>/skills/.factorykit-sync.json so later syncs can update, remove and check it.
+"""
+import argparse
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+MANIFEST_NAME = ".factorykit-sync.json"
+
+
+class SyncError(Exception):
+    pass
+
+
+def tree_hash(path):
+    """Content hash of a file, or of every file under a folder (paths and bytes)."""
+    h = hashlib.sha256()
+    if path.is_file():
+        h.update(path.read_bytes())
+        return h.hexdigest()
+    for f in sorted(p for p in path.rglob("*") if p.is_file()):
+        h.update(f.relative_to(path).as_posix().encode() + b"\0")
+        h.update(f.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def read_lock(lock_path):
+    pin = tomllib.loads(lock_path.read_text(encoding="utf-8"))["mattpocock"]
+    return {"repo": pin["repo"], "tag": pin["tag"], "commit": pin["commit"]}
+
+
+def fetch_upstream(repo_url, tag, workdir):
+    """Shallow-clone the tag; return (folder, commit it resolved to)."""
+    dest = Path(workdir) / "mattpocock-skills"
+    git = ["git", "-c", "advice.detachedHead=false", "-C", str(dest)]
+    dest.mkdir()
+    subprocess.run(git + ["init", "--quiet"], check=True)
+    subprocess.run(git + ["fetch", "--quiet", "--depth", "1", repo_url, f"refs/tags/{tag}"], check=True)
+    subprocess.run(git + ["checkout", "--quiet", "FETCH_HEAD"], check=True)
+    commit = subprocess.run(git + ["rev-parse", "HEAD"],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    return dest, commit
+
+
+def upstream_items(clone):
+    """Skills Matt ships in his Claude Code plugin, as {"skill/<name>": source folder}."""
+    manifest = json.loads((clone / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    return {f"skill/{Path(p).name}": clone / p for p in manifest["skills"]}
+
+
+def our_items(factorykit_dir):
+    """FactoryKit's own skills (skills/<name>/SKILL.md) and agents (agents/<name>.md)."""
+    items = {}
+    skills = factorykit_dir / "skills"
+    if skills.is_dir():
+        for d in sorted(skills.iterdir()):
+            if (d / "SKILL.md").is_file():
+                items[f"skill/{d.name}"] = d
+    agents = factorykit_dir / "agents"
+    if agents.is_dir():
+        for f in sorted(agents.glob("*.md")):
+            items[f"agent/{f.name}"] = f
+    return items
+
+
+def destination(claude_dir, key):
+    kind, name = key.split("/", 1)
+    return claude_dir / ("skills" if kind == "skill" else "agents") / name
+
+
+def load_manifest(claude_dir):
+    path = claude_dir / "skills" / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def plan_sync(claude_dir, desired, manifest, adopt):
+    """Return [(action, key)] for desired = {key: (source, origin)}. Actions: install, update, adopt, remove."""
+    installed = (manifest or {}).get("items", {})
+    clashes, plan = [], []
+    for key, (src, _origin) in sorted(desired.items()):
+        dest = destination(claude_dir, key)
+        if not dest.exists():
+            plan.append(("install", key))
+        elif key in installed:
+            if tree_hash(dest) != tree_hash(src):
+                plan.append(("update", key))
+        elif adopt:
+            plan.append(("adopt", key))
+        else:
+            clashes.append(key)
+    if clashes:
+        raise SyncError("not installed by sync-skills, refusing to overwrite (use --adopt to take them over): "
+                        + ", ".join(clashes))
+    for key in sorted(set(installed) - set(desired)):
+        if destination(claude_dir, key).exists():
+            plan.append(("remove", key))
+    return plan
+
+
+def apply_plan(claude_dir, plan, desired, pin):
+    for action, key in plan:
+        dest = destination(claude_dir, key)
+        if dest.is_dir():
+            shutil.rmtree(dest)
+        elif dest.exists():
+            dest.unlink()
+        if action == "remove":
+            continue
+        src = desired[key][0]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+    manifest = {
+        "pin": {"tag": pin["tag"], "commit": pin["commit"]},
+        "items": {key: {"origin": origin, "hash": tree_hash(src)} for key, (src, origin) in sorted(desired.items())},
+    }
+    path = claude_dir / "skills" / MANIFEST_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def check(claude_dir, pin, factorykit_dir):
+    """Return a list of drift messages; empty means clean. Needs no network."""
+    manifest = load_manifest(claude_dir)
+    if manifest is None:
+        return ["never synced: run python scripts/sync-skills"]
+    drift = []
+    if manifest["pin"] != {"tag": pin["tag"], "commit": pin["commit"]}:
+        drift.append(f"pin: installed {manifest['pin']['tag']}, skills.lock says {pin['tag']}")
+    installed = manifest["items"]
+    for key, entry in sorted(installed.items()):
+        dest = destination(claude_dir, key)
+        if not dest.exists():
+            drift.append(f"missing: {key}")
+        elif tree_hash(dest) != entry["hash"]:
+            drift.append(f"modified since sync: {key}")
+    ours = our_items(factorykit_dir)
+    for key, src in sorted(ours.items()):
+        if key not in installed:
+            drift.append(f"not installed: {key}")
+        elif tree_hash(src) != installed[key]["hash"]:
+            drift.append(f"out of date (changed in FactoryKit): {key}")
+    for key, entry in sorted(installed.items()):
+        if entry["origin"] == "factorykit" and key not in ours:
+            drift.append(f"removed from FactoryKit but still installed: {key}")
+    return drift
+
+
+def sync(claude_dir, pin, factorykit_dir, fetch, dry_run, adopt, out):
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        clone, commit = fetch(pin["repo"], pin["tag"], work)
+        if commit != pin["commit"]:
+            raise SyncError(f"tag {pin['tag']} resolved to {commit}, skills.lock says {pin['commit']}")
+        desired = {k: (src, "mattpocock") for k, src in upstream_items(clone).items()}
+        for key, src in our_items(factorykit_dir).items():
+            if key in desired:
+                raise SyncError(f"FactoryKit {key} has the same name as one of Matt's; rename ours")
+            desired[key] = (src, "factorykit")
+        plan = plan_sync(claude_dir, desired, load_manifest(claude_dir), adopt)
+        for action, key in plan:
+            out(f"{action:8} {key}")
+        if dry_run:
+            out(f"dry run: {len(plan)} change(s), nothing written")
+            return plan
+        apply_plan(claude_dir, plan, desired, pin)
+        out(f"synced {pin['tag']}: {len(plan)} change(s), {len(desired)} item(s) installed")
+        return plan
+
+
+def main(argv=None, fetch=fetch_upstream, out=print):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="report drift, change nothing")
+    mode.add_argument("--dry-run", action="store_true", help="print the changes a sync would make")
+    parser.add_argument("--adopt", action="store_true", help="overwrite same-named skills not installed by this script")
+    parser.add_argument("--claude-dir", type=Path, default=Path.home() / ".claude")
+    parser.add_argument("--lock", type=Path, default=REPO / "skills.lock")
+    parser.add_argument("--factorykit-dir", type=Path, default=REPO)
+    args = parser.parse_args(argv)
+    try:
+        pin = read_lock(args.lock)
+        if args.check:
+            drift = check(args.claude_dir, pin, args.factorykit_dir)
+            for line in drift:
+                out(line)
+            out("clean" if not drift else f"{len(drift)} drift item(s)")
+            return 1 if drift else 0
+        sync(args.claude_dir, pin, args.factorykit_dir, fetch, args.dry_run, args.adopt, out)
+        return 0
+    except (SyncError, subprocess.CalledProcessError, OSError, KeyError) as e:
+        out(f"error: {e}")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
