@@ -63,7 +63,7 @@ These rules are fixed in v1. Only `auto_fix` itself is a setting.
 
 Low risk means all of: CI green, review passed, no `needs-decision`, fewer than about 400 changed lines, no dependency manifest change, no files under `risky_paths`.
 
-`auto-low-risk` relies on the ruleset on `main` (PR only; required checks: CI and `dispatcher/review`; force-push and deletion blocked). No approval count is required, because GitHub does not let a PR's author approve it. `setup-project` creates the ruleset. On a private repo under a GitHub Free account, GitHub refuses rulesets and auto-merge, so that project uses `manual` (ADR 0017).
+`auto-low-risk` relies on the ruleset on `main` (PR only; required checks: CI and `dispatcher/review`; force-push and deletion blocked; repo admins may bypass through a PR only, ADR 0018). No approval count is required, because GitHub does not let a PR's author approve it. `setup-project` creates the ruleset. On a private repo under a GitHub Free account, GitHub refuses rulesets and auto-merge, so that project uses `manual` (ADR 0017).
 
 The dashboard lists recent auto-merges for a weekly skim. If problems show up, switch that project to `manual` or lower its `auto_fix`.
 

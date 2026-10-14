@@ -1,0 +1,490 @@
+#!/usr/bin/env python3
+"""One-time FactoryKit setup of a project repo. Safe to re-run.
+
+    python scripts/setup-project <path-to-repo> --dry-run   print every change, make none
+    python scripts/setup-project <path-to-repo>             ask the questions, then apply
+    python scripts/setup-project <path-to-repo> --yes       use defaults (and any flags) without asking
+
+Order matters for the instructions files: this script writes AGENTS.md, the owner runs Matt's
+/setup-matt-pocock-skills (it edits AGENTS.md because CLAUDE.md does not exist yet), then a re-run
+writes the one-line CLAUDE.md, the triage note, and opens the setup PR.
+"""
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fk_templates as tpl  # noqa: E402
+
+REGISTRY = Path.home() / "factory" / "projects.toml"
+RULESET_NAME = "factorykit-main"
+REVIEW_CHECK = "dispatcher/review"
+ADMIN_BYPASS = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
+WORKTREES_IGNORE = ".claude/worktrees/"
+SETUP_PATHS = ["AGENTS.md", "CLAUDE.md", ".gitignore", "docs/agents", "GLOSSARY.md"]
+
+LABELS = [
+    ("bug", "d73a4a", "Something is broken"),
+    ("enhancement", "a2eeef", "New feature or improvement"),
+    ("needs-triage", "fbca04", "Maintainer needs to evaluate this issue"),
+    ("needs-info", "d4c5f9", "Waiting on reporter for more information"),
+    ("ready-for-agent", "0e8a16", "Fully specified, ready for an agent"),
+    ("wontfix", "ffffff", "Will not be actioned"),
+    ("needs-decision", "b60205", "A human must decide before work continues"),
+    ("no-dispatch", "cccccc", "The FactoryKit dispatcher ignores this PR"),
+]
+AUTO_FIX_VALUES = ["off", "ci", "ci_and_review"]
+MERGE_MODES = ["auto-low-risk", "manual"]
+BLOCK = re.compile(r"<!-- factorykit:(\w+):begin -->.*?<!-- factorykit:\1:end -->\n?", re.S)
+
+
+class SetupError(Exception):
+    pass
+
+
+@dataclass
+class Answers:
+    project_name: str
+    owner: str
+    project_summary: str
+    test_cmd: str
+    typecheck_cmd: str
+    lint_cmd: str
+    build_cmd: str
+    ci_check: str
+    reviewer_model: str
+    max_parallel: int = 2
+    auto_fix: str = "ci_and_review"
+    merge_mode: str = "auto-low-risk"
+    risky_paths: list = field(default_factory=lambda: list(tpl.DEFAULT_RISKY_PATHS))
+
+    def template_values(self):
+        values = {k: str(v) for k, v in self.__dict__.items() if k != "risky_paths"}
+        values["risky_paths_list"] = self.risky_paths
+        return values
+
+
+# ---------------------------------------------------------------- external commands
+
+def run(args, cwd=None, stdin=None):
+    exe = shutil.which(args[0])  # finds claude.cmd and friends on Windows
+    if exe is None:
+        raise FileNotFoundError(args[0])
+    p = subprocess.run([exe, *args[1:]], cwd=cwd, input=stdin, capture_output=True, text=True, encoding="utf-8")
+    return p.returncode, p.stdout, p.stderr
+
+
+class GitHub:
+    """The few GitHub calls setup needs, through the owner's authenticated gh."""
+
+    def __init__(self, repo_dir):
+        self.dir = repo_dir
+        self.repo = None
+
+    def _gh(self, *args, stdin=None, check=True):
+        code, out, err = run(["gh", *args], cwd=self.dir, stdin=stdin)
+        if check and code != 0:
+            raise SetupError(f"gh {' '.join(args[:3])}: {err.strip()}")
+        return code, out, err
+
+    def api(self, method, path, body=None):
+        args = ["api", "-X", method, path] + (["--input", "-"] if body is not None else [])
+        code, out, err = self._gh(*args, stdin=json.dumps(body) if body is not None else None, check=False)
+        if code != 0:
+            if "HTTP 403" in err or "HTTP 403" in out:
+                return 403, None
+            if "HTTP 404" in err or "HTTP 404" in out:
+                return 404, None
+            raise SetupError(f"gh api {method} {path}: {(err or out).strip()}")
+        return 200, json.loads(out) if out.strip() else None
+
+    def whoami(self):
+        return self._gh("api", "user", "--jq", ".login")[1].strip()
+
+    def repo_info(self):
+        out = self._gh("repo", "view", "--json", "nameWithOwner,visibility,defaultBranchRef")[1]
+        d = json.loads(out)
+        self.repo = d["nameWithOwner"]
+        return {"name": d["nameWithOwner"], "visibility": d["visibility"].lower(),
+                "default_branch": d["defaultBranchRef"]["name"]}
+
+    def label_names(self):
+        out = self._gh("label", "list", "--limit", "200", "--json", "name")[1]
+        return {l["name"] for l in json.loads(out)}
+
+    def create_label(self, name, color, description):
+        self._gh("label", "create", name, "--color", color, "--description", description)
+
+    def check_names(self, branch):
+        status, data = self.api("GET", f"repos/{self.repo}/commits/{branch}/check-runs")
+        return sorted({c["name"] for c in data["check_runs"]}) if status == 200 else []
+
+    def find_ruleset(self):
+        """(status, ruleset): status 403 when the plan does not allow rulesets on this repo."""
+        status, data = self.api("GET", f"repos/{self.repo}/rulesets")
+        if status != 200:
+            return status, None
+        for r in data:
+            if r["name"] == RULESET_NAME:
+                return 200, self.api("GET", f"repos/{self.repo}/rulesets/{r['id']}")[1]
+        return 200, None
+
+    def create_ruleset(self, body):
+        return self.api("POST", f"repos/{self.repo}/rulesets", body)[0]
+
+    def update_ruleset(self, ruleset_id, body):
+        return self.api("PUT", f"repos/{self.repo}/rulesets/{ruleset_id}", body)[0]
+
+    def merge_settings(self):
+        d = self.api("GET", f"repos/{self.repo}")[1]
+        return {"allow_auto_merge": d["allow_auto_merge"], "delete_branch_on_merge": d["delete_branch_on_merge"]}
+
+    def set_merge_settings(self, settings):
+        self.api("PATCH", f"repos/{self.repo}", settings)
+
+    def create_pr(self, branch, base, title, body, label):
+        return self._gh("pr", "create", "--head", branch, "--base", base, "--title", title,
+                        "--body", body, "--label", label)[1].strip()
+
+
+class Git:
+    def __init__(self, repo_dir):
+        self.dir = repo_dir
+
+    def _git(self, *args):
+        code, out, err = run(["git", *args], cwd=self.dir)
+        if code != 0:
+            raise SetupError(f"git {' '.join(args[:2])}: {err.strip()}")
+        return out
+
+    def changed(self, paths):
+        out = self._git("status", "--porcelain", "--untracked-files=all", "--", *paths)
+        return [line[3:] for line in out.splitlines() if line.strip()]
+
+    def commit_on_new_branch(self, branch, paths, message):
+        start = self._git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        self._git("switch", "--quiet", "-c", branch)
+        self._git("add", "--", *paths)
+        self._git("commit", "--quiet", "-m", message)
+        self._git("push", "--quiet", "-u", "origin", branch)
+        self._git("switch", "--quiet", start)
+
+
+def check_prerequisites():
+    problems = []
+    if sys.version_info < (3, 11):
+        problems.append(f"Python 3.11+ needed, found {sys.version.split()[0]}")
+    for name, args in [("git", ["git", "--version"]), ("claude", ["claude", "--version"]),
+                       ("gh", ["gh", "auth", "status"])]:
+        try:
+            code, _, err = run(args)
+        except FileNotFoundError:
+            problems.append(f"{name} not found on PATH")
+            continue
+        if code != 0:
+            problems.append("gh is not logged in: run gh auth login" if name == "gh" else f"{name} failed: {err.strip()}")
+    return problems
+
+
+# ---------------------------------------------------------------- pure helpers
+
+def upsert_block(text, block):
+    """Replace the same-named factorykit block in text, or append it."""
+    name = BLOCK.search(block).group(1)
+    existing = next((m for m in BLOCK.finditer(text) if m.group(1) == name), None)
+    if existing:
+        return text[:existing.start()] + block + text[existing.end():]
+    return text.rstrip("\n") + "\n\n" + block
+
+
+def extract_block(rendered):
+    return BLOCK.search(rendered).group(0)
+
+
+def matt_setup_done(repo):
+    agents = repo / "AGENTS.md"
+    return (repo / "docs" / "agents" / "issue-tracker.md").is_file() and agents.is_file() \
+        and "## Agent skills" in agents.read_text(encoding="utf-8")
+
+
+def ruleset_body(ci_check):
+    return {
+        "name": RULESET_NAME,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+        # Repo admins (the owner) may merge a PR without its checks, e.g. no-dispatch PRs (ADR 0018).
+        # pull_request mode: direct pushes to main stay blocked for everyone.
+        "bypass_actors": [ADMIN_BYPASS],
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "pull_request", "parameters": {
+                "required_approving_review_count": 0, "dismiss_stale_reviews_on_push": False,
+                "require_code_owner_review": False, "require_last_push_approval": False,
+                "required_review_thread_resolution": False}},
+            {"type": "required_status_checks", "parameters": {
+                "strict_required_status_checks_policy": False,
+                "required_status_checks": [{"context": ci_check}, {"context": REVIEW_CHECK}]}},
+        ],
+    }
+
+
+def ruleset_matches(existing, wanted):
+    def shape(r):
+        rules = {x["type"]: x.get("parameters", {}) for x in r.get("rules", [])}
+        checks = sorted(c["context"] for c in rules.get("required_status_checks", {}).get("required_status_checks", []))
+        bypass = sorted((b.get("actor_type"), b.get("actor_id"), b.get("bypass_mode")) for b in r.get("bypass_actors", []))
+        return (r.get("enforcement"), sorted(rules), checks,
+                rules.get("pull_request", {}).get("required_approving_review_count"), bypass)
+    return shape(existing) == shape(wanted)
+
+
+def registry_table(name, path, auto_fix, merge_mode):
+    return (f"[{name}]\npath = \"{tpl.toml_escape(path.as_posix())}\"\n"
+            f"auto_fix = \"{auto_fix}\"     # off | ci | ci_and_review\n"
+            f"merge_mode = \"{merge_mode}\"   # manual | auto-low-risk\n")
+
+
+def upsert_registry(text, name, table):
+    """Replace the [name] table (up to the next table) or append it. Other tables and comments are kept."""
+    pattern = re.compile(rf"(?ms)^\[{re.escape(name)}\]\n.*?(?=^\[|\Z)")
+    if pattern.search(text):
+        return pattern.sub(lambda _: table + "\n", text, count=1).rstrip("\n") + "\n"
+    return (text.rstrip("\n") + "\n\n" if text.strip() else "") + table
+
+
+# ---------------------------------------------------------------- setup
+
+class Changes:
+    """Prints each change; applies it unless this is a dry run."""
+
+    def __init__(self, dry_run, out):
+        self.dry_run, self.out, self.count = dry_run, out, 0
+
+    def make(self, description, apply):
+        self.count += 1
+        self.out(("would " if self.dry_run else "") + description)
+        if not self.dry_run:
+            apply()
+
+    def note(self, message):
+        self.out(message)
+
+
+def write_file(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def setup_files(repo, answers, changes):
+    """Write or update the instruction and settings files. Returns True when Matt's setup is done."""
+    values = answers.template_values()
+    agents = repo / "AGENTS.md"
+    claude = repo / "CLAUDE.md"
+    one_line = tpl.render_file("CLAUDE.md", {})
+    rendered_agents = tpl.render_file("AGENTS.md", values)
+    # Matt's setup edits CLAUDE.md whenever it exists, so it must not exist until his setup is done.
+    if claude.exists() and not matt_setup_done(repo):
+        if claude.read_text(encoding="utf-8").strip() != one_line.strip():
+            raise SetupError("CLAUDE.md has its own content and Matt's setup would edit it instead of AGENTS.md. "
+                             "Move its content into AGENTS.md, delete CLAUDE.md, then re-run.")
+        changes.make("remove the one-line CLAUDE.md until Matt's setup is done (it is written back after)",
+                     claude.unlink)
+    if not agents.exists():
+        changes.make("write AGENTS.md", lambda: write_file(agents, rendered_agents))
+    else:
+        current = agents.read_text(encoding="utf-8")
+        updated = upsert_block(current, extract_block(rendered_agents))
+        if updated != current:
+            changes.make("update the FactoryKit block in AGENTS.md", lambda: write_file(agents, updated))
+
+    gitignore = repo / ".gitignore"
+    ignore_text = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if WORKTREES_IGNORE not in ignore_text.splitlines():
+        new = (ignore_text.rstrip("\n") + "\n" if ignore_text.strip() else "") + WORKTREES_IGNORE + "\n"
+        changes.make(f"add {WORKTREES_IGNORE} to .gitignore", lambda: write_file(gitignore, new))
+
+    factory = repo / "docs" / "agents" / "factory.md"
+    if factory.exists():
+        changes.note("docs/agents/factory.md exists: kept as is (change it through a PR)")
+    else:
+        text = tpl.render_file("factory.md", tpl.factory_values(values))
+        changes.make("write docs/agents/factory.md", lambda: write_file(factory, text))
+
+    if not matt_setup_done(repo):
+        changes.note("NEXT: in Claude Code, in this repo, run /setup-matt-pocock-skills "
+                     "(it edits AGENTS.md), then re-run setup-project to finish.")
+        return False
+
+    triage = repo / "docs" / "agents" / "triage-labels.md"
+    if triage.exists():
+        current = triage.read_text(encoding="utf-8")
+        updated = upsert_block(current, tpl.render_file("triage-labels-note.md", {}))
+        if updated != current:
+            changes.make("add the ready-for-human note to docs/agents/triage-labels.md",
+                         lambda: write_file(triage, updated))
+
+    if not claude.exists():
+        changes.make("write CLAUDE.md (@AGENTS.md)", lambda: write_file(claude, one_line))
+    elif claude.read_text(encoding="utf-8").strip() != one_line.strip():
+        changes.note("CLAUDE.md has its own content: kept. Move it into AGENTS.md and make CLAUDE.md "
+                     "the single line @AGENTS.md.")
+    return True
+
+
+def setup_labels(gh, changes):
+    existing = gh.label_names()
+    for name, color, description in LABELS:
+        if name not in existing:
+            changes.make(f"create label {name}", lambda n=name, c=color, d=description: gh.create_label(n, c, d))
+
+
+def setup_ruleset(gh, info, answers, changes):
+    """Create or update the ruleset on the default branch. Returns the merge_mode that can actually work."""
+    status, existing = gh.find_ruleset()
+    if status == 403:
+        changes.note(f"GitHub refuses rulesets on this {info['visibility']} repo for this account's plan "
+                     "(see docs/adr/0017-public-repos-for-now.md). main stays unprotected; "
+                     "this project is registered with merge_mode = \"manual\".")
+        return "manual"
+    wanted = ruleset_body(answers.ci_check)
+    checks = f"{answers.ci_check} and {REVIEW_CHECK}"
+    if existing is None:
+        changes.make(f"create ruleset {RULESET_NAME} on {info['default_branch']} (PR only, checks {checks}, "
+                     "no force-push or deletion)", lambda: gh.create_ruleset(wanted))
+    elif not ruleset_matches(existing, wanted):
+        changes.make(f"update ruleset {RULESET_NAME} (checks {checks})",
+                     lambda: gh.update_ruleset(existing["id"], wanted))
+    if answers.merge_mode == "auto-low-risk":
+        wanted_settings = {"allow_auto_merge": True, "delete_branch_on_merge": True}
+        if gh.merge_settings() != wanted_settings:
+            changes.make("enable auto-merge and delete-branch-on-merge on the repo",
+                         lambda: gh.set_merge_settings(wanted_settings))
+    return answers.merge_mode
+
+
+def setup_registry(registry, repo, answers, merge_mode, changes):
+    text = registry.read_text(encoding="utf-8") if registry.exists() else ""
+    table = registry_table(answers.project_name, repo, answers.auto_fix, merge_mode)
+    updated = upsert_registry(text, answers.project_name, table)
+    if updated != text:
+        changes.make(f"register {answers.project_name} in {registry} "
+                     f"(auto_fix = {answers.auto_fix}, merge_mode = {merge_mode})",
+                     lambda: write_file(registry, updated))
+
+
+def open_setup_pr(git, gh, info, changes, now):
+    paths = git.changed(SETUP_PATHS)
+    if not paths:
+        return
+    branch = f"factorykit/setup-{now:%Y%m%d-%H%M}"
+    body = ("FactoryKit setup: instructions files, `docs/agents/` (including Matt's setup output) and "
+            "`.gitignore`.\n\nCreated by `scripts/setup-project`. Labelled `no-dispatch`: merge it yourself.")
+
+    def apply():
+        git.commit_on_new_branch(branch, sorted(paths), "FactoryKit setup")
+        changes.note("setup PR: " + gh.create_pr(branch, info["default_branch"], "FactoryKit setup", body,
+                                                 "no-dispatch"))
+    changes.make(f"commit {', '.join(sorted(paths))} on {branch} and open a PR (labelled no-dispatch)", apply)
+
+
+
+def setup(repo, answers, gh, git, registry, dry_run, out, now=None):
+    changes = Changes(dry_run, out)
+    info = gh.repo_info()
+    out(f"Project {answers.project_name}: {info['name']} ({info['visibility']}), default branch {info['default_branch']}")
+    files_done = setup_files(repo, answers, changes)
+    setup_labels(gh, changes)
+    merge_mode = setup_ruleset(gh, info, answers, changes)
+    setup_registry(registry, repo, answers, merge_mode, changes)
+    if files_done:
+        open_setup_pr(git, gh, info, changes, now or datetime.now())
+    out(("dry run: " if dry_run else "") + (f"{changes.count} change(s)" if changes.count else "nothing to change"))
+    return changes.count
+
+
+# ---------------------------------------------------------------- questions
+
+def ask(prompt, default, assume_yes, choices=None):
+    if assume_yes:
+        return default
+    hint = f" [{default}]" if default != "" else " [none]"
+    while True:
+        answer = input(f"{prompt}{hint}: ").strip()
+        value = answer or default
+        if choices is None or value in choices:
+            return value
+        print(f"  choose one of: {', '.join(choices)}")
+
+
+def collect_answers(args, repo, gh, info):
+    y = args.yes
+    detected = gh.check_names(info["default_branch"])
+    print("Verify commands (leave empty if the project has none):")
+    answers = Answers(
+        project_name=args.name or ask("Project name", repo.name, y),
+        owner=gh.whoami(),
+        project_summary=args.summary or ask("One-line project summary", f"{repo.name}.", y),
+        test_cmd=args.test_cmd if args.test_cmd is not None else ask("  test", "", y),
+        typecheck_cmd=args.typecheck_cmd if args.typecheck_cmd is not None else ask("  typecheck", "", y),
+        lint_cmd=args.lint_cmd if args.lint_cmd is not None else ask("  lint", "", y),
+        build_cmd=args.build_cmd if args.build_cmd is not None else ask("  build", "", y),
+        ci_check=args.ci_check or ask(
+            "Name of the CI check the ruleset requires" + (f" (seen: {', '.join(detected)})" if detected else ""),
+            detected[0] if detected else "ci", y),
+        reviewer_model=args.reviewer_model or ask("Reviewer model (different from the builder's)", "sonnet", y),
+        max_parallel=int(args.max_parallel or ask("max_parallel (1 to 3)", "2", y, ["1", "2", "3"])),
+        merge_mode=args.merge_mode or ask("merge_mode", "auto-low-risk", y, MERGE_MODES),
+        auto_fix=args.auto_fix or ask("auto_fix", "ci_and_review", y, AUTO_FIX_VALUES),
+    )
+    print("Default risky_paths: " + ", ".join(tpl.DEFAULT_RISKY_PATHS))
+    extra = args.risky_path or ([] if y else [p.strip() for p in input(
+        "Extra risky paths, comma-separated [none]: ").split(",") if p.strip()])
+    answers.risky_paths += extra
+    return answers
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("repo", type=Path)
+    parser.add_argument("--dry-run", action="store_true", help="print every change, make none")
+    parser.add_argument("--yes", action="store_true", help="use defaults instead of asking")
+    parser.add_argument("--registry", type=Path, default=REGISTRY)
+    parser.add_argument("--name")
+    parser.add_argument("--summary")
+    for cmd in ("test", "typecheck", "lint", "build"):
+        parser.add_argument(f"--{cmd}-cmd")
+    parser.add_argument("--ci-check")
+    parser.add_argument("--reviewer-model")
+    parser.add_argument("--max-parallel", choices=["1", "2", "3"])
+    parser.add_argument("--merge-mode", choices=MERGE_MODES)
+    parser.add_argument("--auto-fix", choices=AUTO_FIX_VALUES)
+    parser.add_argument("--risky-path", action="append", default=[], help="extra risky path glob (repeatable)")
+    args = parser.parse_args(argv)
+    repo = args.repo.expanduser().resolve()
+    try:
+        if not (repo / ".git").exists():
+            raise SetupError(f"{repo} is not a git repo")
+        problems = check_prerequisites()
+        if problems:
+            raise SetupError("prerequisites: " + "; ".join(problems))
+        gh, git = GitHub(repo), Git(repo)
+        info = gh.repo_info()
+        answers = collect_answers(args, repo, gh, info)
+        setup(repo, answers, gh, git, args.registry.expanduser(), args.dry_run, print)
+        return 0
+    except SetupError as e:
+        print(f"error: {e}")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
