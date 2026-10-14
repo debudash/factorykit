@@ -17,7 +17,7 @@ FactoryKit is a light, reusable way to deliver software on any GitHub repo with 
 
 - One VS Code window per project, at most 2 projects at a time. The owner always works in the project's normal folder and never manages git worktrees.
 - Planning phases (shape, spec, design, tickets, triage) run interactively in the owner's main Claude Code session.
-- Builders are Claude Code background subagents with `isolation: worktree`. Claude creates and cleans up their worktrees.
+- Builders are Claude Code background subagents with `isolation: worktree`. Claude creates their worktrees; the dispatcher removes each one after its PR is merged or closed (ADR 0016).
 - Up to `max_parallel` items build at once per project (default 2, range 1 to 3). Only tickets whose blockers are all merged may start.
 - Projects are GitHub repos. Issues, PRs, checks, labels and rules on `main` are the system of record.
 
@@ -167,6 +167,7 @@ The dispatcher never edits code itself. It runs agents, inspects their diffs, pu
 
 - GitHub does not allow a PR author to approve their own PR, so no approval count is required.
 - Ruleset on `main`: changes through a PR only; required checks: CI and `dispatcher/review`; force-push and deletion blocked.
+- The owner's account is on GitHub Free, where rulesets need a public repo, so projects are public for now. A private project falls back to `merge_mode = manual` (ADR 0017).
 - `merge_mode` per project in `projects.toml`: `auto-low-risk` (default) or `manual`.
 - Low risk = CI green, review passed, no `needs-decision`, fewer than about 400 changed lines, no dependency manifest change, no files under `risky_paths`.
 - Everything else is held for the owner with the reason posted.

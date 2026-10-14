@@ -2,7 +2,7 @@
 
 | Step | Status | PR | Notes |
 |---|---|---|---|
-| 0 Verify unknowns | not started | | |
+| 0 Verify unknowns | done, awaiting owner review | #1 | V1 to V6 recorded in `docs/verification.md`. ADR 0016 (dispatcher cleans up builder worktrees), ADR 0017 (public repos for now). Scratch: `D:\Dev\factorykit-scratch\repo`, GitHub `debudash/factorykit-scratch` (public) |
 | 1 Skeleton and docs | not started | | |
 | 2 Templates and skill sync | not started | | |
 | 3 Project setup script | not started | | |
