@@ -1,0 +1,47 @@
+# Factory router configuration. Every key is optional; defaults live in router.py.
+
+[github]
+require_label = "factory"          # only PRs with this label are routed
+escalation_label = "needs-decision" # router pauses a PR while this label is present
+
+[routing]
+route_ci = true
+route_reviews = true
+# A review comment is routed when ANY of these match:
+trigger_prefixes = ["/agent", "/fix"]  # comment starts with one of these
+trigger_tags = ["[blocking]"]          # comment contains one of these
+route_changes_requested = true         # comment belongs to a "Request changes" review
+# Who may trigger routing. Empty allowlist = any human. Bots are ignored unless listed.
+reviewer_allowlist = []
+allow_bot_authors = []                 # e.g. ["coderabbitai[bot]"] to route an AI reviewer
+ignore_authors = []
+baseline_existing = true               # on first sight of a PR, do not route old comments
+max_ci_attempts = 3                    # per PR, resets when CI goes green
+max_review_attempts = 5                # per PR, resets when a human clears the escalation label
+max_log_lines = 200
+
+[runtime]
+poll_seconds = 60
+max_concurrent = 3                     # matches the factory WIP cap
+max_run_minutes = 45
+state_dir = ".factory"
+
+[agent]
+claude_command = "claude"              # on Windows you may need the full path to claude.cmd
+session = "fork"                       # fork: continue the owner's latest session in a fork
+                                       # continue: write into the owner's latest session
+                                       # new: fresh session every time
+model = ""                             # empty = Claude Code default
+permission_mode = "acceptEdits"
+max_turns = 30
+allowed_tools = [
+  "Read", "Edit", "Write", "Grep", "Glob",
+  "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+  "Bash(git add:*)", "Bash(git commit:*)", "Bash(git push:*)",
+  # Add your project's test and build commands, for example:
+  # "Bash(npm test:*)", "Bash(pytest:*)", "Bash(dotnet test:*)",
+]
+disallowed_tools = [
+  "Bash(git push --force:*)", "Bash(git push -f:*)",
+  "Bash(git push --force-with-lease:*)", "Bash(gh pr merge:*)",
+]
