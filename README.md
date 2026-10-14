@@ -46,7 +46,7 @@ Re-running the script is safe: it only changes what is missing or out of date, a
 
 ## Daily use
 
-1. Open the project in VS Code and start the dispatcher: Terminal > Run Task > "FactoryKit: start dispatcher" (Step 6). Open the dashboard the same way.
+1. Start the dispatcher once for all your projects: `python -m dispatcher watch` from this repo (Step 6 adds a VS Code task "FactoryKit: start dispatcher" and the dashboard). `python -m dispatcher once --dry-run` shows what it would do without changing anything; `python -m dispatcher status` lists what it is tracking.
 2. **New idea (Lane A):** in Claude Code, run `/grill-with-docs`, then `/to-spec`, then `/design-doc`. Review and merge the docs PR (Gate 1). Run `/to-tickets` and check that every acceptance criterion is testable (Gate 2). Ask Claude to build a ticket; the builder runs in the background.
 3. **Defect or outside PR (Lane B):** run `/triage`. Use `/diagnosing-bugs` for hard bugs. Then build as in Lane A.
 4. **Then wait for exceptions.** The dispatcher reviews, fixes and merges low-risk PRs. You only look at PRs "Held for you" (Gate 3) or labelled `needs-decision`. The dashboard's "Needs you" inbox lists them.
