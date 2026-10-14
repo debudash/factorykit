@@ -17,7 +17,7 @@ FactoryKit is a light, reusable way to deliver software on any GitHub repo with 
 
 - One VS Code window per project, at most 2 projects at a time. The owner always works in the project's normal folder and never manages git worktrees.
 - Planning phases (shape, spec, design, tickets, triage) run interactively in the owner's main Claude Code session.
-- Builders are Claude Code background subagents with `isolation: worktree`. Claude creates and cleans up their worktrees.
+- Builders are Claude Code background subagents with `isolation: worktree`. Claude creates their worktrees; the dispatcher removes each one after its PR is merged or closed (ADR 0016).
 - Up to `max_parallel` items build at once per project (default 2, range 1 to 3). Only tickets whose blockers are all merged may start.
 - Projects are GitHub repos. Issues, PRs, checks, labels and rules on `main` are the system of record.
 

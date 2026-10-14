@@ -2,7 +2,7 @@
 
 | Step | Status | PR | Notes |
 |---|---|---|---|
-| 0 Verify unknowns | not started | | |
+| 0 Verify unknowns | in progress | | V1 to V5 done; V6 blocked: GitHub refuses rulesets on private repos (account treated as Free). Waiting on owner decision. See `docs/verification.md` |
 | 1 Skeleton and docs | not started | | |
 | 2 Templates and skill sync | not started | | |
 | 3 Project setup script | not started | | |
