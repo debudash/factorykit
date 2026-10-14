@@ -1,0 +1,6 @@
+# Pinned version of Matt Pocock's skills, installed by scripts/sync-skills.
+# Upgrade procedure: docs/upgrades.md. The commit guards against a moved tag.
+[mattpocock]
+repo = "https://github.com/mattpocock/skills.git"
+tag = "v1.3.1"
+commit = "24fe0ef7737efae15c87225755e9f6f5965e4888"
