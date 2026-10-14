@@ -167,6 +167,7 @@ The dispatcher never edits code itself. It runs agents, inspects their diffs, pu
 
 - GitHub does not allow a PR author to approve their own PR, so no approval count is required.
 - Ruleset on `main`: changes through a PR only; required checks: CI and `dispatcher/review`; force-push and deletion blocked.
+- The owner's account is on GitHub Free, where rulesets need a public repo, so projects are public for now. A private project falls back to `merge_mode = manual` (ADR 0017).
 - `merge_mode` per project in `projects.toml`: `auto-low-risk` (default) or `manual`.
 - Low risk = CI green, review passed, no `needs-decision`, fewer than about 400 changed lines, no dependency manifest change, no files under `risky_paths`.
 - Everything else is held for the owner with the reason posted.

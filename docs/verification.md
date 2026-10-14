@@ -13,7 +13,7 @@ Scratch area: `D:\Dev\factorykit-scratch\` (outside this repo). It holds `repo/`
 | V3 `/implement` from a subagent | Refused (`disable-model-invocation`). `tdd` loads | Fallback: builder definition repeats `/implement`'s steps, calls `tdd` and `code-review` |
 | V4 `code-review` headless | Works; Matt's user-level skill shadows the built-in one | Reviewer calls the skill; dispatcher passes merge-base SHA and diff in the prompt |
 | V5 Worktree subagents | Background and worktree work. Worktrees with commits are **not** cleaned up | Dispatcher removes them after merge or close (ADR 0016) |
-| V6 GitHub plan | Rulesets, branch protection and auto-merge refused on a private repo: GitHub treats `debudash` as Free | Needs owner decision (see V6) |
+| V6 GitHub plan | Free plan: refused on private repos. On a public repo the ruleset, required statuses and auto-merge all work end to end | Public repos for now (ADR 0017); private repos fall back to `merge_mode = manual` |
 
 ## V1 - CLI flags
 
@@ -97,7 +97,7 @@ Chosen path (owner decision, `docs/adr/0016-dispatcher-cleans-up-builder-worktre
 
 ## V6 - GitHub plan and rulesets
 
-Owner's stated plan: Pro. **GitHub treats `debudash` as Free** for private repos.
+The account `debudash` is on GitHub **Free**. (The owner's Pro subscription is Copilot Pro, which does not include GitHub Pro features.)
 
 Steps:
 1. `gh auth login` by the owner (account `debudash`, keyring). `gh api user` does not return the plan name with this token's scopes.
@@ -107,6 +107,23 @@ Steps:
 4. Classic branch protection, `PUT .../branches/main/protection`: same 403.
 5. `PATCH repos/... allow_auto_merge=true`: no error, but it stays `false`. GitHub auto-merge also needs protection, so on this plan it is unavailable for private repos.
 
-Effect on the design: sections 4 (docs PR because `main` is protected), 10 step 6 (enable GitHub auto-merge) and 12 (ruleset, `merge_mode = auto-low-risk`) assume protection on `main`. On private repos under this account, none of that is enforced by GitHub.
+Private repo result: sections 4 (docs PR because `main` is protected), 10 step 6 (enable GitHub auto-merge) and 12 (ruleset, `merge_mode = auto-low-risk`) assume protection on `main`. On private repos under this account, none of that is enforced by GitHub.
 
-Chosen path: pending owner decision (options in the Step 0 summary). The scratch repo `debudash/factorykit-scratch` (private) stays for later steps until the owner says to delete it.
+Owner decision (ADR 0017): use public repos for now. The scratch repo was made public and the test repeated:
+
+6. `gh repo edit debudash/factorykit-scratch --visibility public`: OK.
+7. Same ruleset POST: created, `enforcement=active`. `GET .../rules/branches/main` returns `deletion`, `non_fast_forward`, `pull_request`, `required_status_checks ci,dispatcher/review`.
+8. `PATCH` `allow_auto_merge=true`, `delete_branch_on_merge=true`: both stay `true`.
+9. Direct `git push origin main`: rejected, `GH013: Repository rule violations found`.
+10. PR #1 from branch `v6-pr`, `gh pr merge --auto --squash`: `mergeStateStatus=BLOCKED` until checks pass.
+11. Commit statuses posted with `gh api -X POST repos/.../statuses/<sha> -f state=success -f context=ci` and `context=dispatcher/review`: the ruleset accepts plain commit statuses as required checks (no GitHub App or check run needed). State became `CLEAN`.
+12. GitHub merged the PR about one to two minutes later (`mergedBy=debudash`, the account that enabled auto-merge), and deleted the head branch.
+
+Chosen path: projects are public repos for now, with the ruleset from design section 12 and GitHub auto-merge as designed. `setup-project` (Step 3) checks the repo's visibility. For a private repo it tries the ruleset, and on HTTP 403 it explains the fallback (`merge_mode = manual`, no enforcement on `main`) instead of failing.
+
+Notes for Step 5:
+- The dispatcher reports `dispatcher/review` as a commit status on the PR head SHA. Project CI must report a check named exactly as listed in the ruleset (`ci` here), so `setup-project` should ask for the real CI check name.
+- Auto-merge is not instant. The dashboard should show "auto-merge enabled, waiting" rather than treating a short delay as a problem.
+- Merges show as made by the owner's account, so the PR's verdict comment is what records that the dispatcher decided.
+
+The scratch repo `debudash/factorykit-scratch` (now public, ruleset active) stays for later steps until the owner says to delete it.
