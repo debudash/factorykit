@@ -1,0 +1,104 @@
+{
+  // FactoryKit tasks: Terminal > Run Task. Long-running tasks get their own terminal panel.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "FactoryKit: start dispatcher",
+      "type": "shell",
+      "command": "python -m dispatcher watch",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated", "reveal": "always", "group": "factorykit" }
+    },
+    {
+      "label": "FactoryKit: dispatcher dry run",
+      "type": "shell",
+      "command": "python -m dispatcher once --dry-run",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always" }
+    },
+    {
+      "label": "FactoryKit: dispatcher status",
+      "type": "shell",
+      "command": "python -m dispatcher status",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always" }
+    },
+    {
+      "label": "FactoryKit: start dashboard server",
+      "type": "shell",
+      "command": "python -m dispatcher.dashboard",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": { "regexp": "^__never__$" },
+        "background": { "activesBegin": true, "beginsPattern": "^FactoryKit dashboard", "endsPattern": "^FactoryKit dashboard" }
+      },
+      "presentation": { "panel": "dedicated", "reveal": "silent", "group": "factorykit" }
+    },
+    {
+      "label": "FactoryKit: open dashboard",
+      "type": "shell",
+      "command": "echo Dashboard at http://127.0.0.1:8765/ ${input:openDashboard}",
+      "dependsOn": "FactoryKit: start dashboard server",
+      "problemMatcher": []
+    },
+    {
+      "label": "FactoryKit: set up a project (dry run)",
+      "type": "shell",
+      "command": "python scripts/setup-project \"${input:repoPath}\" --dry-run",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always" }
+    },
+    {
+      "label": "FactoryKit: set up a project",
+      "type": "shell",
+      "command": "python scripts/setup-project \"${input:repoPath}\"",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always", "focus": true }
+    },
+    {
+      "label": "FactoryKit: sync skills",
+      "type": "shell",
+      "command": "python scripts/sync-skills",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always" }
+    },
+    {
+      "label": "FactoryKit: check skills",
+      "type": "shell",
+      "command": "python scripts/sync-skills --check",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "panel": "shared", "reveal": "always" }
+    },
+    {
+      "label": "FactoryKit: run tests",
+      "type": "shell",
+      "command": "python -m unittest discover -s tests",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "group": "test",
+      "presentation": { "panel": "shared", "reveal": "always" }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "repoPath",
+      "type": "promptString",
+      "description": "Path to the project repo to set up"
+    },
+    {
+      "id": "openDashboard",
+      "type": "command",
+      "command": "simpleBrowser.show",
+      "args": "http://127.0.0.1:8765/"
+    }
+  ]
+}

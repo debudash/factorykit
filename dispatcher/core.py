@@ -318,6 +318,7 @@ class Dispatcher:
                     "verdict": verdict.message, "at": now_iso()}])[-50:]
         if not self.dry_run:
             st["verdict_sha"] = head
+            st["verdict"] = {"sha": head, "auto": verdict.auto_merge, "message": verdict.message}
 
     # ------------------------------------------------------------ escalation
     def _escalate(self, gh, key, st, reason):

@@ -473,6 +473,7 @@ class DispatcherTest(unittest.TestCase):
         d.cycle()
         self.assertEqual(len([b for _, b in self.a.comments if "Auto-merge" in b]), 1, "verdict once per head")
         self.assertEqual(d.state["auto_merges"][0]["pr"], "alpha#9")
+        self.assertEqual(d.state["prs"]["alpha#9"]["verdict"]["auto"], True)
 
     def test_risky_pr_is_held_with_reason(self):
         self.a.files[9] = ["db/migrations/2.sql"]

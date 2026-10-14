@@ -46,10 +46,10 @@ Re-running the script is safe: it only changes what is missing or out of date, a
 
 ## Daily use
 
-1. Start the dispatcher once for all your projects: `python -m dispatcher watch` from this repo (Step 6 adds a VS Code task "FactoryKit: start dispatcher" and the dashboard). `python -m dispatcher once --dry-run` shows what it would do without changing anything; `python -m dispatcher status` lists what it is tracking.
+1. Open this repo in VS Code and run two tasks (Terminal > Run Task): "FactoryKit: start dispatcher" (one dispatcher for all your projects) and "FactoryKit: open dashboard" (starts the read-only dashboard on http://127.0.0.1:8765/ and opens it in VS Code's Simple Browser). From a terminal: `python -m dispatcher watch` and `python -m dispatcher.dashboard`. `python -m dispatcher once --dry-run` shows what the dispatcher would do without changing anything.
 2. **New idea (Lane A):** in Claude Code, run `/grill-with-docs`, then `/to-spec`, then `/design-doc`. Review and merge the docs PR (Gate 1). Run `/to-tickets` and check that every acceptance criterion is testable (Gate 2). Ask Claude to build a ticket; the builder runs in the background.
 3. **Defect or outside PR (Lane B):** run `/triage`. Use `/diagnosing-bugs` for hard bugs. Then build as in Lane A.
-4. **Then wait for exceptions.** The dispatcher reviews, fixes and merges low-risk PRs. You only look at PRs "Held for you" (Gate 3) or labelled `needs-decision`. The dashboard's "Needs you" inbox lists them.
+4. **Then wait for exceptions.** The dispatcher reviews, fixes and merges low-risk PRs. You only look at PRs "Held for you" (Gate 3) or labelled `needs-decision`. The dashboard's default view, the "Needs you" inbox, lists them across all projects.
 5. Every few items, run `/retro` to tighten checks and rules.
 
 What you check at each gate is in `docs/workflow.md`. Every setting is in `docs/settings.md`. Upgrading Matt's skills is in `docs/upgrades.md`.
