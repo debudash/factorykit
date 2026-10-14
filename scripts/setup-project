@@ -28,7 +28,16 @@ RULESET_NAME = "factorykit-main"
 REVIEW_CHECK = "dispatcher/review"
 ADMIN_BYPASS = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
 WORKTREES_IGNORE = ".claude/worktrees/"
-SETUP_PATHS = ["AGENTS.md", "CLAUDE.md", ".gitignore", "docs/agents", "GLOSSARY.md"]
+SETUP_PATHS = ["AGENTS.md", "CLAUDE.md", ".gitignore", ".claude/settings.json", "docs/agents", "GLOSSARY.md"]
+# Commands no agent in this project may run (merging is GitHub's job; history is never rewritten). ADR 0018.
+DENY_RULES = [
+    "Bash(gh pr merge *)",
+    "Bash(git push --force *)",
+    "Bash(git push -f *)",
+    "Bash(git push --force-with-lease *)",
+    "Bash(gh api *rulesets*)",
+    "Bash(gh api *branches/*/protection*)",
+]
 
 LABELS = [
     ("bug", "d73a4a", "Something is broken"),
@@ -371,6 +380,19 @@ def setup_ruleset(gh, info, answers, changes):
     return answers.merge_mode
 
 
+def setup_claude_settings(repo, changes):
+    """Add the FactoryKit deny rules to the project's .claude/settings.json, keeping everything else."""
+    path = repo / ".claude" / "settings.json"
+    settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    deny = settings.setdefault("permissions", {}).setdefault("deny", [])
+    missing = [r for r in DENY_RULES if r not in deny]
+    if missing:
+        deny.extend(missing)
+        text = json.dumps(settings, indent=2) + "\n"
+        changes.make(f"add {len(missing)} deny rule(s) to .claude/settings.json (no merging, no force-push, "
+                     "no ruleset edits by agents)", lambda: write_file(path, text))
+
+
 def setup_registry(registry, repo, answers, merge_mode, changes):
     text = registry.read_text(encoding="utf-8") if registry.exists() else ""
     table = registry_table(answers.project_name, repo, answers.auto_fix, merge_mode)
@@ -402,6 +424,7 @@ def setup(repo, answers, gh, git, registry, dry_run, out, now=None):
     info = gh.repo_info()
     out(f"Project {answers.project_name}: {info['name']} ({info['visibility']}), default branch {info['default_branch']}")
     files_done = setup_files(repo, answers, changes)
+    setup_claude_settings(repo, changes)
     setup_labels(gh, changes)
     merge_mode = setup_ruleset(gh, info, answers, changes)
     setup_registry(registry, repo, answers, merge_mode, changes)
