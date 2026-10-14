@@ -97,6 +97,18 @@ The rules block contains:
 - **Post decisions before acting:** a decision given in chat is posted on the PR as "Decision by @<owner>: ..." before the agent acts on it.
 - **Builder rules:** push only its own branch; never push `main`, merge or force-push; print `NEEDS_DECISION:` instead of guessing.
 
+## `.claude/settings.json` deny rules
+
+`setup-project` adds these to the project's `.claude/settings.json` (keeping anything already there). They apply to your Claude Code sessions in the project and to every agent, because agents run with your `gh` login:
+
+| Rule | Why |
+|---|---|
+| `Bash(gh pr merge *)` | Merging is GitHub's job (auto-merge) or yours on the PR page |
+| `Bash(git push --force *)`, `Bash(git push -f *)`, `Bash(git push --force-with-lease *)` | Pushed history is never rewritten |
+| `Bash(gh api *rulesets*)`, `Bash(gh api *branches/*/protection*)` | Agents never change the rules on `main` |
+
+Remove a rule through a PR if a project needs to. Agent definition files cannot deny single commands, which is why these live here.
+
 ## Fixed values in v1
 
 These are not settings. They are listed so you know where the numbers come from.

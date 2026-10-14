@@ -254,6 +254,19 @@ class SetupProjectTest(unittest.TestCase):
         self.assertEqual(text.count("[scratch]"), 1)
 
 
+    def test_deny_rules_added_once_and_existing_settings_kept(self):
+        settings = self.repo / ".claude" / "settings.json"
+        settings.parent.mkdir()
+        settings.write_text('{"permissions": {"allow": ["Bash(npm test)"], "deny": ["Bash(gh pr merge *)"]}, "model": "x"}',
+                            encoding="utf-8")
+        self.run_setup()
+        self.run_setup()
+        data = __import__("json").loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(data["model"], "x")
+        self.assertEqual(data["permissions"]["allow"], ["Bash(npm test)"])
+        self.assertEqual(sorted(data["permissions"]["deny"]), sorted(sp.DENY_RULES))
+
+
 class HelpersTest(unittest.TestCase):
     def test_upsert_block_replaces_only_same_named_block(self):
         text = "a\n<!-- factorykit:x:begin -->old<!-- factorykit:x:end -->\nb\n"
